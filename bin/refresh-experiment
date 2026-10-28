@@ -28,5 +28,6 @@ else
 fi
 rm -f "$yml"
 write_records "$dir" "$dir/env" "$sv_commit" "$nf_commit"
+write_nf_config "$dir/experiment.config" "$dir/env"
 info "env now matches svensemble2 ${sv_commit:0:7}"
 echo "note: -resume does not notice env changes; cached svensemble tasks will not rerun"

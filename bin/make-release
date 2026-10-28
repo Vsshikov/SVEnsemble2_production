@@ -50,8 +50,7 @@ chmod -R a-w "$rel"
 finished=1
 
 info "release ready: $rel"
-echo "run from a separate launch directory:"
-echo "  nextflow run $rel/nf-core-svensemble -c $rel/release.config ..."
+print_run_hint "$rel" release.config
 for repo in "${REPOS[@]}"; do
     if git -C "$repo" remote get-url origin &> /dev/null; then
         echo "push the tag when ready: git -C $repo push origin $tag"

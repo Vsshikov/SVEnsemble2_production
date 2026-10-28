@@ -34,5 +34,4 @@ write_records "$dir" "$dir/env" "$sv_commit" "$nf_commit"
 write_nf_config "$dir/experiment.config" "$dir/env"
 
 info "experiment ready: $dir"
-echo "run from a separate launch directory:"
-echo "  nextflow run $dir/nf-core-svensemble -c $dir/experiment.config ..."
+print_run_hint "$dir" experiment.config

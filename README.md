@@ -90,8 +90,15 @@ How the parts depend on each other:
 - svensemble inside `env/` is installed from a **commit**, never from the files on
   disk. So `env/` always matches the commit recorded in `MANIFEST`, and uncommitted
   edits can't sneak in.
-- The `.config` file sets `params.svensemble_conda` to `env/`. That is the
-  parameter the pipeline's svensemble tasks use to find their env.
+- The `.config` file points the pipeline's svensemble tasks at `env/`. It sets two
+  things, because setting only one isn't enough:
+  - `params.svensemble_conda`, used by the modules' `conda` directive.
+  - the `beforeScript` that activates the env, for every `SVENSEMBLE_*` process. The
+    pipeline's `conf/modules.config` builds that line from the param while the
+    pipeline's own config is read, which happens before any `-c` file. A `-c` file
+    that changed only the param would leave the tasks activating the old env.
+- None of this happens unless you pass the file with `-c`. Without it, the tasks
+  use the env named in the pipeline's `nextflow.config`.
 
 ## 4. Experiment lifecycle
 
@@ -143,6 +150,11 @@ up to you.
 mkdir -p /path/to/run/foo && cd /path/to/run/foo
 nextflow run <group>/nf-core-svensemble -c <group>/experiment.config -profile ... [params]
 ```
+
+- **Always pass `-c <group>/experiment.config`** (or `release.config` for a release).
+  It's the only thing that makes svensemble tasks use the group's env
+  ([§3](#3-the-parts-of-a-group)). `new-experiment` and `make-release` print this
+  reminder when they finish.
 
 - **Launch from a separate directory.** Nextflow writes `.nextflow/` and `work/`
   into the directory you launch from. Launching inside a worktree would leave
