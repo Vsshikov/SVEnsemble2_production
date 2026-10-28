@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# usage: new-experiment <name> [svensemble2-ref] [pipeline-ref]
+#
+# Creates worktrees/<name>/ with a branch exp/<name> checked out in both repos,
+# its own env, and experiment.config pointing the pipeline at that env.
+# Refs default to main. If exp/<name> already exists, it is reused and the refs are ignored.
+source "$(dirname "$0")/../lib/common.sh"
+
+[[ $# -ge 1 && $# -le 3 ]] || usage
+name=$1
+refs=("${2:-$MAIN_BRANCH}" "${3:-$MAIN_BRANCH}")
+branch="exp/$name"
+dir="$WORKTREES_DIR/$name"
+[[ -e "$dir" ]] && die "$dir already exists"
+mkdir -p "$dir"
+
+for i in 0 1; do
+    repo=${REPOS[$i]}
+    target="$dir/$(basename "$repo")"
+    warn_if_dirty "$repo"
+    if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
+        info "$(basename "$repo"): reusing existing branch $branch"
+        git -C "$repo" worktree add "$target" "$branch"
+    else
+        resolve_commit "$repo" "${refs[$i]}" > /dev/null
+        git -C "$repo" worktree add -b "$branch" "$target" "${refs[$i]}"
+    fi
+done
+
+sv_commit=$(resolve_commit "$SVENSEMBLE_REPO" "$branch")
+nf_commit=$(resolve_commit "$PIPELINE_REPO" "$branch")
+build_env "$dir/env" "$dir/svensemble2/environment.yml" "$sv_commit"
+write_records "$dir" "$dir/env" "$sv_commit" "$nf_commit"
+write_nf_config "$dir/experiment.config" "$dir/env"
+
+info "experiment ready: $dir"
+echo "run from a separate launch directory:"
+echo "  nextflow run $dir/nf-core-svensemble -c $dir/experiment.config ..."

@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# usage: remove-experiment <name>
+#
+# Removes worktrees/<name>/: both worktrees, the env and the generated files.
+# Refuses if either worktree has uncommitted changes, or if the directory holds
+# anything else (move results out first). Branches exp/<name> are kept.
+source "$(dirname "$0")/../lib/common.sh"
+
+[[ $# -eq 1 ]] || usage
+name=$1
+dir="$WORKTREES_DIR/$name"
+branch="exp/$name"
+[[ -d "$dir" ]] || die "no experiment at $dir"
+
+# git refuses to remove a worktree with uncommitted or untracked files: that is the safety check
+for repo in "${REPOS[@]}"; do
+    target="$dir/$(basename "$repo")"
+    if [[ -e "$target" ]]; then
+        git -C "$repo" worktree remove "$target"
+    fi
+done
+
+rm -rf "$dir/env"
+rm -f "$dir"/{MANIFEST,env.lock,pip.lock,environment.used.yml,experiment.config}
+rmdir "$dir" 2> /dev/null || die "$dir still contains other files; move them out and rerun"
+info "removed $dir"
+
+for repo in "${REPOS[@]}"; do
+    git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" || continue
+    if git -C "$repo" merge-base --is-ancestor "$branch" "$MAIN_BRANCH"; then
+        echo "$(basename "$repo"): $branch is merged into $MAIN_BRANCH; delete with: git -C $repo branch -d $branch"
+    else
+        echo "$(basename "$repo"): $branch is NOT merged into $MAIN_BRANCH; kept"
+    fi
+done

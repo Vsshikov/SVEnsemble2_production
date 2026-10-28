@@ -1,0 +1,4 @@
+# Large or rebuildable: never tracked
+envs/
+pkgs/
+results/

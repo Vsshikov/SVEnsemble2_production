@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# usage: make-release <tag> [svensemble2-ref] [pipeline-ref]
+#
+# Creates releases/<tag>/: plain copies of both repos at the given commits, an
+# env built from the release's environment.yml, lock files, MANIFEST and
+# release.config. Both commits must be on main. Refs default to main.
+# On success: tags <tag> in both repos, copies the records to manifests/<tag>/,
+# commits them in the production repo, and makes the release read-only.
+source "$(dirname "$0")/../lib/common.sh"
+
+[[ $# -ge 1 && $# -le 3 ]] || usage
+tag=$1
+rel="$RELEASES_DIR/$tag"
+[[ -e "$rel" ]] && die "$rel already exists"
+
+commits=()
+for i in 0 1; do
+    repo=${REPOS[$i]}
+    ref=${2:-$MAIN_BRANCH}
+    [[ $i -eq 1 ]] && ref=${3:-$MAIN_BRANCH}
+    commit=$(resolve_commit "$repo" "$ref")
+    git -C "$repo" merge-base --is-ancestor "$commit" "$MAIN_BRANCH" ||
+        die "$(basename "$repo"): ${commit:0:7} is not on $MAIN_BRANCH; merge it first"
+    existing=$(git -C "$repo" rev-parse --verify --quiet "refs/tags/$tag^{commit}" || true)
+    [[ -z "$existing" || "$existing" == "$commit" ]] ||
+        die "$(basename "$repo"): tag $tag already exists on another commit (${existing:0:7})"
+    commits+=("$commit")
+done
+
+# Remove the half-built release if anything below fails
+trap '[[ -n "${finished:-}" ]] || { echo "release failed; removing $rel" >&2; chmod -R u+w "$rel" 2>/dev/null; rm -rf "$rel"; }' EXIT
+
+for i in 0 1; do
+    repo=${REPOS[$i]}
+    mkdir -p "$rel/$(basename "$repo")"
+    git -C "$repo" archive "${commits[$i]}" | tar -x -C "$rel/$(basename "$repo")"
+done
+build_env "$rel/env" "$rel/svensemble2/environment.yml" "${commits[0]}"
+write_records "$rel" "$rel/env" "${commits[0]}" "${commits[1]}"
+write_nf_config "$rel/release.config" "$rel/env"
+
+mkdir -p "$MANIFESTS_DIR/$tag"
+cp "$rel"/{MANIFEST,env.lock,pip.lock,environment.used.yml} "$MANIFESTS_DIR/$tag/"
+git -C "$PRODUCTION_DIR" add "manifests/$tag"
+git -C "$PRODUCTION_DIR" commit -q -m "Release $tag" -- "manifests/$tag"
+for i in 0 1; do
+    git -C "${REPOS[$i]}" tag -f -a "$tag" -m "Release $tag" "${commits[$i]}" > /dev/null
+done
+chmod -R a-w "$rel"
+finished=1
+
+info "release ready: $rel"
+echo "run from a separate launch directory:"
+echo "  nextflow run $rel/nf-core-svensemble -c $rel/release.config ..."
+for repo in "${REPOS[@]}"; do
+    if git -C "$repo" remote get-url origin &> /dev/null; then
+        echo "push the tag when ready: git -C $repo push origin $tag"
+    fi
+done

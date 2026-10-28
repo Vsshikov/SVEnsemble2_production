@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# usage: refresh-experiment <name>
+#
+# Brings an experiment's env up to date with the latest commit on exp/<name>
+# in svensemble2. Reinstalls only svensemble, unless environment.yml changed
+# in that commit or the env is missing, in which case the whole env is rebuilt.
+# Uncommitted edits in the worktree are never installed: commit them first.
+source "$(dirname "$0")/../lib/common.sh"
+
+[[ $# -eq 1 ]] || usage
+name=$1
+dir="$WORKTREES_DIR/$name"
+branch="exp/$name"
+[[ -d "$dir/svensemble2" ]] || die "no experiment at $dir"
+
+warn_if_dirty "$dir/svensemble2"
+sv_commit=$(resolve_commit "$SVENSEMBLE_REPO" "$branch")
+nf_commit=$(resolve_commit "$PIPELINE_REPO" "$branch")
+yml=$(mktemp)
+git -C "$SVENSEMBLE_REPO" show "$sv_commit:environment.yml" > "$yml"
+
+if [[ -d "$dir/env" ]] && cmp -s "$yml" "$dir/environment.used.yml"; then
+    install_svensemble "$dir/env" "$sv_commit"
+else
+    info "env missing or environment.yml changed: rebuilding the env"
+    rm -rf "$dir/env"
+    build_env "$dir/env" "$yml" "$sv_commit"
+fi
+rm -f "$yml"
+write_records "$dir" "$dir/env" "$sv_commit" "$nf_commit"
+info "env now matches svensemble2 ${sv_commit:0:7}"
+echo "note: -resume does not notice env changes; cached svensemble tasks will not rerun"

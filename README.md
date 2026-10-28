@@ -1,0 +1,203 @@
+# production
+
+Scripts that turn the two code repos into things you can run: **experiments**
+(temporary, editable) and **releases** (permanent, frozen). This repo also keeps
+the record of every release.
+
+- [1. The map](#1-the-map)
+- [2. The three places code lives](#2-the-three-places-code-lives)
+- [3. The parts of a group](#3-the-parts-of-a-group)
+- [4. Experiment lifecycle](#4-experiment-lifecycle)
+- [5. Release lifecycle](#5-release-lifecycle)
+- [6. Running the pipeline](#6-running-the-pipeline)
+- [7. Rules the scripts enforce](#7-rules-the-scripts-enforce)
+- [8. Commands](#8-commands)
+- [9. When things go wrong](#9-when-things-go-wrong)
+
+---
+
+## 1. The map
+
+Everything starts in the two repos and flows one way: into experiments, then onto
+`main`, then into releases, then into the paper.
+
+```
+                svensemble2/  +  nf-core-svensemble/        development (§2)
+                     │                    │
+       new-experiment│                    │make-release
+       (branch + worktree)                │(tag + plain copy)
+                     ▼                    │
+          worktrees/<name>/               │                 experiments (§4)
+                     │                    │
+          merge exp/<name> into main ─────┘
+                                          ▼
+                              releases/<tag>/               releases (§5)
+                                    │        │
+                                    │        └──► production/manifests/<tag>/
+                                    ▼                      (record, in git)
+                              results for the paper
+```
+
+Project root layout:
+
+```
+Papenfuss_SVEnsemble2/
+├── svensemble2/              Python package repo        (development)
+├── nf-core-svensemble/       Nextflow pipeline repo     (development)
+├── svensemble2_pub/          paper analysis; consumes releases
+├── production/               this repo: scripts + release records
+│   ├── bin/                  the commands (§8)
+│   ├── lib/common.sh         shared paths and helpers
+│   └── manifests/<tag>/      one record per release
+├── worktrees/<name>/         one directory per experiment
+└── releases/<tag>/           one directory per release
+```
+
+## 2. The three places code lives
+
+| | Development | Experiment | Release |
+|---|---|---|---|
+| Where | `svensemble2/`, `nf-core-svensemble/` | `worktrees/<name>/` | `releases/<tag>/` |
+| Made by | you | [`new-experiment`](#new-experiment) | [`make-release`](#make-release) |
+| Code is | your normal checkout | git worktree on branch `exp/<name>` | plain copy of a tagged commit, no git |
+| Can change? | yes | yes: commit fixes on `exp/<name>` | no, read-only |
+| Lives | always | until you [remove](#remove-experiment) it | forever |
+| Results go in the paper? | no | no ([§5](#5-release-lifecycle) explains how to promote one) | yes |
+
+All three share one git history. A commit made in an experiment's worktree shows up
+in the development checkout straight away, because it is the same repo.
+
+## 3. The parts of a group
+
+An experiment and a release have the same structure, so once you know one you know
+both:
+
+```
+<group>/
+├── svensemble2/            code: worktree (experiment) or copy (release)
+├── nf-core-svensemble/     code: worktree (experiment) or copy (release)
+├── env/                    Python env, svensemble installed non-editable
+├── experiment.config       or release.config: points the pipeline at env/
+├── environment.used.yml    the environment.yml the env was built from
+├── env.lock                exact conda packages  ─┐
+├── pip.lock                exact pip packages     ├─ enough to rebuild env/
+└── MANIFEST                commits, Python version ┘
+```
+
+How the parts depend on each other:
+
+- `env/` is built from `svensemble2/environment.yml`.
+- svensemble inside `env/` is installed from a **commit**, never from the files on
+  disk. So `env/` always matches the commit recorded in `MANIFEST`, and uncommitted
+  edits can't sneak in.
+- The `.config` file sets `params.svensemble_conda` to `env/`. That is the
+  parameter the pipeline's svensemble tasks use to find their env.
+
+## 4. Experiment lifecycle
+
+```
+new-experiment ──► run ──► (fix ──► commit ──► refresh-experiment ──► run)* ──► merge ──► remove-experiment
+```
+
+1. **Create.** `new-experiment foo` creates branch `exp/foo` from `main` in both
+   repos, checks it out in `worktrees/foo/`, and builds the env. To start from a
+   feature branch instead, pass it:
+   `new-experiment foo feature/x main`. The arguments are the svensemble2 ref, then
+   the pipeline ref.
+2. **Run.** See [§6](#6-running-the-pipeline).
+3. **Fix.** Edit in `worktrees/foo/svensemble2/` or `worktrees/foo/nf-core-svensemble/`,
+   then commit. Your commit lands on `exp/foo`.
+   - A pipeline fix takes effect on the next run.
+   - A svensemble fix needs `refresh-experiment foo` first, which reinstalls svensemble
+     from the new commit. It also rebuilds the whole env if `environment.yml` changed.
+4. **Merge.** If the work is worth keeping, merge `exp/foo` into `main` from your
+   development checkout: `git merge exp/foo`.
+5. **Remove.** `remove-experiment foo` deletes the directory and env, and tells you
+   whether `exp/foo` is merged. Branches are never deleted for you.
+
+## 5. Release lifecycle
+
+```
+merge into main ──► make-release ──► run ──► cite the tag
+```
+
+1. Get the code you want onto `main` in both repos.
+2. `make-release v0.5.0` copies `main` of both repos, builds the env, writes the
+   records, tags both repos `v0.5.0`, commits the records to `manifests/v0.5.0/`,
+   and makes the release read-only. To release specific commits on `main` rather
+   than its tip, pass them: `make-release v0.5.0 <svensemble2-commit> <pipeline-commit>`.
+3. Run the pipeline from the release ([§6](#6-running-the-pipeline)).
+4. Next to each set of results, note the tag. The tag leads to `manifests/<tag>/`,
+   and that leads to the exact code and packages.
+
+**Promoting an experiment.** If an experiment gave results you want in the paper,
+merge it into `main`, make a release, and rerun from the release. If rerunning is
+too expensive, keep that experiment's `MANIFEST` and lock files with the results.
+
+**Pushing.** Tags are created locally. The script prints the push command; pushing is
+up to you.
+
+## 6. Running the pipeline
+
+```bash
+mkdir -p /path/to/run/foo && cd /path/to/run/foo
+nextflow run <group>/nf-core-svensemble -c <group>/experiment.config -profile ... [params]
+```
+
+- **Launch from a separate directory.** Nextflow writes `.nextflow/` and `work/`
+  into the directory you launch from. Launching inside a worktree would leave
+  untracked files in it, and `remove-experiment` would refuse. A release is
+  read-only, so launching there fails outright.
+- **`-resume` doesn't notice env changes.** Nextflow's task hash ignores the env, so
+  after `refresh-experiment`, cached svensemble tasks don't rerun. Use a fresh launch
+  directory, or no `-resume`, after a refresh.
+
+## 7. Rules the scripts enforce
+
+1. **One main line.** Releases come only from commits on `main` (`make-release`
+   checks).
+2. **An env matches a commit.** svensemble is always installed from a commit, never
+   from your working files.
+3. **Releases never change.** They're read-only, and if a tag already points at a
+   different commit, `make-release` refuses.
+4. **Nothing is lost on removal.** `remove-experiment` refuses if a worktree has
+   uncommitted changes or the directory holds anything it didn't create, and it never
+   deletes branches.
+5. **A failed release leaves nothing behind.** If `make-release` fails partway, it
+   deletes the half-built release, and no tags are created.
+
+## 8. Commands
+
+All of these are in `bin/`. Run any of them without arguments to see its usage.
+
+#### new-experiment
+`new-experiment <name> [svensemble2-ref] [pipeline-ref]`
+Creates `worktrees/<name>/` on branch `exp/<name>` in both repos. Refs default to
+`main`. If `exp/<name>` already exists, it's reused, so you can bring back a removed
+experiment.
+
+#### refresh-experiment
+`refresh-experiment <name>`
+Reinstalls svensemble in the experiment's env from the latest commit on
+`exp/<name>`, and rebuilds the whole env if `environment.yml` changed or the env is missing. It then
+rewrites `MANIFEST` and the lock files.
+
+#### remove-experiment
+`remove-experiment <name>`
+Removes the worktrees, the env and the generated files, and keeps the branches.
+
+#### make-release
+`make-release <tag> [svensemble2-ref] [pipeline-ref]`
+Builds `releases/<tag>/`, tags both repos, and records `manifests/<tag>/` in this
+repo.
+
+## 9. When things go wrong
+
+| Situation | What to do |
+|---|---|
+| `new-experiment` failed partway | `remove-experiment <name>`, then run it again |
+| An experiment env broke or got deleted | `rm -rf worktrees/<name>/env`, then `refresh-experiment <name>` rebuilds it |
+| A release env broke or got deleted | rebuild from its records: `micromamba create -p <rel>/env --file <rel>/env.lock`, then `pip install --no-deps` svensemble from the tag. Run `chmod -R u+w <rel>` first, `chmod -R a-w <rel>` after |
+| You need to delete a release | `chmod -R u+w releases/<tag> && rm -rf releases/<tag>`. The tag and `manifests/<tag>/` stay, so you can rebuild it later |
+| `remove-experiment` refuses | it names the reason: commit or discard changes in the worktree, or move results out of the directory |
+| `make-release` says a commit is not on `main` | merge it into `main` first ([§7](#7-rules-the-scripts-enforce), rule 1) |
