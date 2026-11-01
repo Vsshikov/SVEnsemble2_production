@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# usage: make-release <tag> [svensemble2-ref] [pipeline-ref]
+# usage: make-release [--apptainer] <tag> [svensemble2-ref] [pipeline-ref]
 #
 # Creates releases/<tag>/: plain copies of both repos at the given commits, an
 # env built from the release's environment.yml, lock files, MANIFEST and
 # release.config. Both commits must be on main. Refs default to main.
 # On success: tags <tag> in both repos, copies the records to manifests/<tag>/,
 # commits them in the production repo, and makes the release read-only.
+#
+#   --apptainer   also build an apptainer image of the env, and run svensemble tasks in it
 source "$(dirname "$0")/../lib/common.sh"
 
+parse_opts "$@"; set -- "${ARGS[@]}"
 [[ $# -ge 1 && $# -le 3 ]] || usage
 tag=$1
 rel="$RELEASES_DIR/$tag"
@@ -37,10 +40,12 @@ for i in 0 1; do
 done
 build_env "$rel/env" "$rel/svensemble2/environment.yml" "${commits[0]}"
 write_records "$rel" "$rel/env" "${commits[0]}" "${commits[1]}"
-write_nf_config "$rel/release.config" "$rel/env"
+[[ -n "$APPTAINER" ]] && build_image "$rel" "${commits[0]}"
+write_nf_config "$rel/release.config" "$rel/env" "$(current_image "$rel")"
 
 mkdir -p "$MANIFESTS_DIR/$tag"
 cp "$rel"/{MANIFEST,env.lock,pip.lock,environment.used.yml} "$MANIFESTS_DIR/$tag/"
+[[ -n "$APPTAINER" ]] && cp "$rel/svensemble.def" "$MANIFESTS_DIR/$tag/"
 git -C "$PRODUCTION_DIR" add "manifests/$tag"
 git -C "$PRODUCTION_DIR" commit -q -m "Release $tag" -- "manifests/$tag"
 for i in 0 1; do

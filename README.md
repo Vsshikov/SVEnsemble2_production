@@ -81,7 +81,9 @@ both:
 ├── environment.used.yml    the environment.yml the env was built from
 ├── env.lock                exact conda packages  ─┐
 ├── pip.lock                exact pip packages     ├─ enough to rebuild env/
-└── MANIFEST                commits, Python version ┘
+├── MANIFEST                commits, Python version ┘
+├── svensemble.def          with --apptainer: recipe of the image
+└── svensemble-<commit>-<hash>.sif   with --apptainer: env/ rebuilt in an image
 ```
 
 How the parts depend on each other:
@@ -99,6 +101,15 @@ How the parts depend on each other:
     that changed only the param would leave the tasks activating the old env.
 - None of this happens unless you pass the file with `-c`. Without it, the tasks
   use the env named in the pipeline's `nextflow.config`.
+- With `--apptainer`, the scripts also build an apptainer image: `env.lock` and
+  svensemble from the same commit, installed in `/opt/env` on a `micromamba` base. The
+  `.config` file then sets the image as the `container` of every `SVENSEMBLE_*`
+  process, and empties their `beforeScript`. The `beforeScript` runs on the host,
+  so an env activated there would leak into the container.
+  - The file name holds the svensemble commit and a hash of the recipe and
+    `env.lock`. So the name changes exactly when the image's contents do, and an
+    unchanged image is never rebuilt.
+  - `env/` is still built. The image is made from its records.
 
 ## 4. Experiment lifecycle
 
@@ -163,6 +174,12 @@ nextflow run <group>/nf-core-svensemble -c <group>/experiment.config -profile ..
 - **`-resume` doesn't notice env changes.** Nextflow's task hash ignores the env, so
   after `refresh-experiment`, cached svensemble tasks don't rerun. Use a fresh launch
   directory, or no `-resume`, after a refresh.
+  - A group with an image is the exception. The task hash includes the container
+    name, and the name changes with the contents, so a refreshed image reruns the
+    svensemble tasks under `-resume`.
+- **An image needs `-profile apptainer`.** Without a container engine, Nextflow
+  ignores `container`. The emptied `beforeScript` then activates nothing, and the tasks
+  run with whatever Python is on the `PATH`.
 
 ## 7. Rules the scripts enforce
 
@@ -180,28 +197,35 @@ nextflow run <group>/nf-core-svensemble -c <group>/experiment.config -profile ..
 
 ## 8. Commands
 
-All of these are in `bin/`. Run any of them without arguments to see its usage.
+All of these are in `bin/`. Run any of them without arguments, or with `-h`, to see
+its usage. Options can go anywhere on the line.
+
+`--apptainer` (on `new-experiment`, `refresh-experiment` and `make-release`) also
+builds the group's image ([§3](#3-the-parts-of-a-group)) and points the `.config`
+at it. It needs `module load apptainer`, and network access to Docker Hub and
+conda-forge. A build takes about 5–10 minutes and makes an image of about 300 MB.
 
 #### new-experiment
-`new-experiment <name> [svensemble2-ref] [pipeline-ref]`
+`new-experiment [--apptainer] <name> [svensemble2-ref] [pipeline-ref]`
 Creates `worktrees/<name>/` on branch `exp/<name>` in both repos. Refs default to
 `main`. If `exp/<name>` already exists, it's reused, so you can bring back a removed
 experiment.
 
 #### refresh-experiment
-`refresh-experiment <name>`
+`refresh-experiment [--apptainer] <name>`
 Reinstalls svensemble in the experiment's env from the latest commit on
 `exp/<name>`, and rebuilds the whole env if `environment.yml` changed or the env is missing. It then
-rewrites `MANIFEST` and the lock files.
+rewrites `MANIFEST` and the lock files. If the experiment has an image, or you pass
+`--apptainer`, it rebuilds the image and deletes the old one.
 
 #### remove-experiment
 `remove-experiment <name>`
-Removes the worktrees, the env and the generated files, and keeps the branches.
+Removes the worktrees, the env, the image and the generated files, and keeps the branches.
 
 #### make-release
-`make-release <tag> [svensemble2-ref] [pipeline-ref]`
+`make-release [--apptainer] <tag> [svensemble2-ref] [pipeline-ref]`
 Builds `releases/<tag>/`, tags both repos, and records `manifests/<tag>/` in this
-repo.
+repo. With `--apptainer`, the image's recipe goes into `manifests/<tag>/` too.
 
 ## 9. When things go wrong
 
@@ -213,3 +237,4 @@ repo.
 | You need to delete a release | `chmod -R u+w releases/<tag> && rm -rf releases/<tag>`. The tag and `manifests/<tag>/` stay, so you can rebuild it later |
 | `remove-experiment` refuses | it names the reason: commit or discard changes in the worktree, or move results out of the directory |
 | `make-release` says a commit is not on `main` | merge it into `main` first ([§7](#7-rules-the-scripts-enforce), rule 1) |
+| An image build failed | fix the cause (often network, or `/tmp` full: set `APPTAINER_TMPDIR`). For an experiment, the env is already built: run `refresh-experiment --apptainer <name>`. `make-release` removes the half-built release, so just run it again |

@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# usage: new-experiment <name> [svensemble2-ref] [pipeline-ref]
+# usage: new-experiment [--apptainer] <name> [svensemble2-ref] [pipeline-ref]
 #
 # Creates worktrees/<name>/ with a branch exp/<name> checked out in both repos,
 # its own env, and experiment.config pointing the pipeline at that env.
 # Refs default to main. If exp/<name> already exists, it is reused and the refs are ignored.
+#
+#   --apptainer   also build an apptainer image of the env, and run svensemble tasks in it
 source "$(dirname "$0")/../lib/common.sh"
 
+parse_opts "$@"; set -- "${ARGS[@]}"
 [[ $# -ge 1 && $# -le 3 ]] || usage
 name=$1
 refs=("${2:-$MAIN_BRANCH}" "${3:-$MAIN_BRANCH}")
@@ -31,7 +34,8 @@ sv_commit=$(resolve_commit "$SVENSEMBLE_REPO" "$branch")
 nf_commit=$(resolve_commit "$PIPELINE_REPO" "$branch")
 build_env "$dir/env" "$dir/svensemble2/environment.yml" "$sv_commit"
 write_records "$dir" "$dir/env" "$sv_commit" "$nf_commit"
-write_nf_config "$dir/experiment.config" "$dir/env"
+[[ -n "$APPTAINER" ]] && build_image "$dir" "$sv_commit"
+write_nf_config "$dir/experiment.config" "$dir/env" "$(current_image "$dir")"
 
 info "experiment ready: $dir"
 print_run_hint "$dir" experiment.config

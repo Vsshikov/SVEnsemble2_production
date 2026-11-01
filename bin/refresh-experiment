@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# usage: refresh-experiment <name>
+# usage: refresh-experiment [--apptainer] <name>
 #
 # Brings an experiment's env up to date with the latest commit on exp/<name>
 # in svensemble2. Reinstalls only svensemble, unless environment.yml changed
 # in that commit or the env is missing, in which case the whole env is rebuilt.
 # Uncommitted edits in the worktree are never installed: commit them first.
+#
+#   --apptainer   also build an apptainer image of the env, and run svensemble tasks in it.
+#                 Once an experiment has an image, every refresh rebuilds it.
 source "$(dirname "$0")/../lib/common.sh"
 
+parse_opts "$@"; set -- "${ARGS[@]}"
 [[ $# -eq 1 ]] || usage
 name=$1
 dir="$WORKTREES_DIR/$name"
@@ -28,6 +32,13 @@ else
 fi
 rm -f "$yml"
 write_records "$dir" "$dir/env" "$sv_commit" "$nf_commit"
-write_nf_config "$dir/experiment.config" "$dir/env"
+if [[ -n "$APPTAINER" || -n "$(current_image "$dir")" ]]; then
+    build_image "$dir" "$sv_commit"
+fi
+write_nf_config "$dir/experiment.config" "$dir/env" "$(current_image "$dir")"
 info "env now matches svensemble2 ${sv_commit:0:7}"
-echo "note: -resume does not notice env changes; cached svensemble tasks will not rerun"
+if [[ -n "$(current_image "$dir")" ]]; then
+    echo "note: svensemble tasks run in $(basename "$(current_image "$dir")"); -resume reruns them if its name changed"
+else
+    echo "note: -resume does not notice env changes; cached svensemble tasks will not rerun"
+fi

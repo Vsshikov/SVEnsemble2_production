@@ -21,7 +21,7 @@ for repo in "${REPOS[@]}"; do
 done
 
 rm -rf "$dir/env"
-rm -f "$dir"/{MANIFEST,env.lock,pip.lock,environment.used.yml,experiment.config}
+rm -f "$dir"/{MANIFEST,env.lock,pip.lock,environment.used.yml,experiment.config,svensemble.def} "$dir"/svensemble-*.sif
 rmdir "$dir" 2> /dev/null || die "$dir still contains other files; move them out and rerun"
 info "removed $dir"
 
