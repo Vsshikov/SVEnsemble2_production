@@ -1,0 +1,23 @@
+Bootstrap: docker
+From: mambaorg/micromamba:2.10.0
+
+%labels
+    svensemble2_commit bb3b5724362c5694b1b741e4012b76ce8269af7f
+
+%files
+    env.lock /opt/env.lock
+    svensemble2.tar.gz /opt/svensemble2.tar.gz
+
+%post
+    export MAMBA_ROOT_PREFIX=/opt/conda
+    # procps: Nextflow needs ps inside the container to record task metrics
+    apt-get update -qq && apt-get install -y -qq --no-install-recommends procps > /dev/null
+    rm -rf /var/lib/apt/lists/*
+    micromamba create -y -q -p /opt/env -f /opt/env.lock
+    /opt/env/bin/pip install -q --no-deps /opt/svensemble2.tar.gz
+    /opt/env/bin/pip check
+    micromamba clean -a -y -q
+    rm /opt/svensemble2.tar.gz
+
+%environment
+    export PATH=/opt/env/bin:$PATH

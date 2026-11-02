@@ -1,0 +1,7 @@
+name=duphold_stable_1
+written=2026-11-03T00:07:46+11:00
+svensemble2_commit=bb3b5724362c5694b1b741e4012b76ce8269af7f
+nf-core-svensemble_commit=8a76d255594acf4c92b596ef1b951116deb861c3
+python=3.14.10
+image=svensemble-a7a0ef2-5366fdce.sif
+svensemble2_pub_commit=d294eae2f6fa3c47861b19ecef52b4405bde1447
