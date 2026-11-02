@@ -13,22 +13,26 @@ RELEASES_DIR="$PROJECT_ROOT/releases"
 MANIFESTS_DIR="$PRODUCTION_DIR/manifests"
 MAIN_BRANCH=main
 IMAGE_BASE=mambaorg/micromamba:2.10.0   # docker base of the apptainer images
+PUB_REPO="$PROJECT_ROOT/svensemble2_pub"            # svensemble_analyse, installed editable in env-analysis/
+ANALYSIS_EXTRAS="$PRODUCTION_DIR/specs/analysis.yml" # plotting and notebook packages added for env-analysis/
 
 die() { echo "error: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
 # usage: print the script's header comment (everything after the shebang, up to the first non-comment line)
 usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 1; }
 
-# parse_opts "$@": sets APPTAINER=1 for --apptainer, prints usage for -h/--help,
-# and leaves the positional args in ARGS. Use as: parse_opts "$@"; set -- "${ARGS[@]}"
+# parse_opts "$@": sets APPTAINER=1 for --apptainer, ANALYSIS=1 for --analysis, prints
+# usage for -h/--help, and leaves the positional args in ARGS. Use as: parse_opts "$@"; set -- "${ARGS[@]}"
 parse_opts() {
     local opts
-    opts=$(getopt -o h -l apptainer,help -n "$(basename "$0")" -- "$@") || usage
+    opts=$(getopt -o h -l apptainer,analysis,help -n "$(basename "$0")" -- "$@") || usage
     eval set -- "$opts"
     APPTAINER=
+    ANALYSIS=
     while true; do
         case $1 in
             --apptainer) APPTAINER=1; shift ;;
+            --analysis) ANALYSIS=1; shift ;;
             -h | --help) usage ;;
             --) shift; break ;;
         esac
@@ -72,6 +76,59 @@ install_svensemble() {
     "$MAMBA" run -p "$prefix" pip install -q --no-deps --force-reinstall "$tarball"
     "$MAMBA" run -p "$prefix" pip check
     rm -rf "$(dirname "$tarball")"
+}
+
+# analysis_spec <environment.yml>: the record of what env-analysis/ is built from
+# (the core spec, then the analysis extras), compared on refresh to spot changes
+analysis_spec() {
+    cat "$1"
+    echo "---"
+    cat "$ANALYSIS_EXTRAS"
+}
+
+# build_analysis_env <group dir> <environment.yml> <commit>
+# Creates <group>/env-analysis/: the core spec plus specs/analysis.yml, svensemble from
+# <commit> as in env/, and svensemble_analyse editable from svensemble2_pub.
+# It is separate from env/: the pipeline, its config and its image never use it.
+build_analysis_env() {
+    local dir=$1 yml=$2 commit=$3 prefix="$1/env-analysis"
+    [[ -f "$yml" ]] || die "no environment.yml at $yml"
+    [[ -f "$ANALYSIS_EXTRAS" ]] || die "no analysis spec at $ANALYSIS_EXTRAS"
+    [[ -f "$PUB_REPO/pyproject.toml" ]] || die "no svensemble_analyse package at $PUB_REPO"
+    info "building analysis env at $prefix"
+    "$MAMBA" create -y -q -p "$prefix" -f "$yml" -f "$ANALYSIS_EXTRAS"
+    analysis_spec "$yml" > "$dir/analysis.used.yml"
+    install_svensemble "$prefix" "$commit"
+    install_analyse "$prefix"
+    "$MAMBA" env export -p "$prefix" --explicit > "$dir/env-analysis.lock"
+}
+
+# install_analyse <prefix>: svensemble_analyse editable from svensemble2_pub, so its edits apply at once
+install_analyse() {
+    info "installing svensemble_analyse (editable) from $PUB_REPO"
+    "$MAMBA" run -p "$1" pip install -q --no-deps -e "$PUB_REPO"
+    "$MAMBA" run -p "$1" pip check
+}
+
+# refresh_analysis_env <group dir> <environment.yml> <commit>: rebuild env-analysis/ if its
+# spec changed or it is missing, else only reinstall svensemble from <commit>
+refresh_analysis_env() {
+    local dir=$1 yml=$2 commit=$3
+    if [[ -d "$dir/env-analysis" ]] && cmp -s <(analysis_spec "$yml") "$dir/analysis.used.yml"; then
+        install_svensemble "$dir/env-analysis" "$commit"
+        "$MAMBA" env export -p "$dir/env-analysis" --explicit > "$dir/env-analysis.lock"
+    else
+        info "analysis env missing or its spec changed: rebuilding it"
+        rm -rf "$dir/env-analysis"
+        build_analysis_env "$dir" "$yml" "$commit"
+    fi
+}
+
+# print_kernel_hint <group dir>: how to make env-analysis/ a Jupyter kernel (not done automatically)
+print_kernel_hint() {
+    echo "analysis env: $1/env-analysis (svensemble_analyse editable from $PUB_REPO)"
+    echo "to use it as a Jupyter kernel:"
+    echo "  $MAMBA run -p $1/env-analysis python -m ipykernel install --user --name $(basename "$1")-analysis"
 }
 
 # write_records <dir> <env prefix> <svensemble2 commit> <pipeline commit>
@@ -125,19 +182,64 @@ From: $IMAGE_BASE
 EOF
 }
 
+# same_package <commit> <commit>: true if both commits hold the same svensemble/ tree and pyproject.toml,
+# i.e. install the same package
+same_package() {
+    [[ "$(git -C "$SVENSEMBLE_REPO" rev-parse "$1:svensemble" "$1:pyproject.toml")" == \
+       "$(git -C "$SVENSEMBLE_REPO" rev-parse "$2:svensemble" "$2:pyproject.toml")" ]]
+}
+
+# image_name <group dir> <svensemble2 commit>: file name of the image for <commit>'s svensemble
+# package and the group's env.lock (run write_records first). It holds the hash of the svensemble/
+# tree, and a hash of the recipe without its commit label, pyproject.toml and env.lock. A commit
+# that changes nothing the image installs (tests, docs, other files) keeps the name. Nextflow's
+# task hash includes the container name, so only a real change reruns svensemble tasks.
+image_name() {
+    local dir=$1 commit=$2 tree sum def
+    tree=$(git -C "$SVENSEMBLE_REPO" rev-parse "$commit:svensemble")
+    def=$(mktemp)
+    write_image_def "$def" "$commit"
+    sum=$( { grep -v 'svensemble2_commit' "$def"
+             git -C "$SVENSEMBLE_REPO" rev-parse "$commit:pyproject.toml"
+             cat "$dir/env.lock"; } | sha256sum | cut -c1-8)
+    rm -f "$def"
+    echo "svensemble-${tree:0:7}-$sum.sif"
+}
+
+# matching_image <group dir> <svensemble2 commit>: print the group's image if it holds <commit>'s
+# svensemble package and the group's env.lock; print nothing if there is none or it is stale.
+# Also recognises images named before image_name existed: svensemble-<commit>-<hash of recipe + env.lock>.
+matching_image() {
+    local dir=$1 commit=$2 sif name old def sum
+    sif=$(current_image "$dir")
+    [[ -n "$sif" ]] || return 0
+    name=$(basename "$sif")
+    if [[ "$name" == "$(image_name "$dir" "$commit")" ]]; then
+        echo "$sif"
+        return 0
+    fi
+    [[ "$name" =~ ^svensemble-([0-9a-f]{7})-([0-9a-f]{8})\.sif$ ]] || return 0
+    old=$(git -C "$SVENSEMBLE_REPO" rev-parse --verify --quiet "${BASH_REMATCH[1]}^{commit}") || return 0
+    same_package "$old" "$commit" || return 0
+    def=$(mktemp)
+    write_image_def "$def" "$old"
+    sum=$(cat "$def" "$dir/env.lock" | sha256sum | cut -c1-8)
+    rm -f "$def"
+    [[ "$name" == "svensemble-${old:0:7}-$sum.sif" ]] && echo "$sif"
+    return 0
+}
+
 # build_image <group dir> <svensemble2 commit>: apptainer image of the group's env. Run write_records first.
-# The name hashes the recipe and env.lock, and carries the commit. Nextflow's task
-# hash includes the container name, so a changed image reruns svensemble tasks under
-# -resume, and an unchanged one is not rebuilt. Older images of the group are deleted.
+# Named by image_name; an image of that name is reused, not rebuilt. Older images of the group are deleted.
 build_image() {
-    local dir=$1 commit=$2 sum sif ctx old
+    local dir=$1 commit=$2 sif ctx old
     command -v apptainer > /dev/null || die "apptainer not found (run 'module load apptainer')"
     write_image_def "$dir/svensemble.def" "$commit"
-    sum=$(cat "$dir/svensemble.def" "$dir/env.lock" | sha256sum | cut -c1-8)
-    sif="$dir/svensemble-${commit:0:7}-$sum.sif"
-    if [[ -f "$sif" ]]; then
+    sif=$(matching_image "$dir" "$commit")
+    if [[ -n "$sif" ]]; then
         info "image up to date: $(basename "$sif")"
     else
+        sif="$dir/$(image_name "$dir" "$commit")"
         ctx=$(mktemp -d)
         cp "$dir/svensemble.def" "$dir/env.lock" "$ctx/"
         git -C "$SVENSEMBLE_REPO" archive --format=tar.gz --prefix=svensemble2/ -o "$ctx/svensemble2.tar.gz" "$commit"

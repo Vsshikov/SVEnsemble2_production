@@ -83,7 +83,10 @@ both:
 ├── pip.lock                exact pip packages     ├─ enough to rebuild env/
 ├── MANIFEST                commits, Python version ┘
 ├── svensemble.def          with --apptainer: recipe of the image
-└── svensemble-<commit>-<hash>.sif   with --apptainer: env/ rebuilt in an image
+├── svensemble-<tree>-<hash>.sif     with --apptainer: env/ rebuilt in an image
+├── env-analysis/           with --analysis: env/ plus plotting packages; for analysis only
+├── analysis.used.yml       with --analysis: the specs env-analysis/ was built from
+└── env-analysis.lock       with --analysis: exact conda packages of env-analysis/
 ```
 
 How the parts depend on each other:
@@ -106,10 +109,24 @@ How the parts depend on each other:
   `.config` file then sets the image as the `container` of every `SVENSEMBLE_*`
   process, and empties their `beforeScript`. The `beforeScript` runs on the host,
   so an env activated there would leak into the container.
-  - The file name holds the svensemble commit and a hash of the recipe and
-    `env.lock`. So the name changes exactly when the image's contents do, and an
-    unchanged image is never rebuilt.
+  - The file name holds the hash of the `svensemble/` tree at the commit, and a hash
+    of the recipe (without its commit label), `pyproject.toml` and `env.lock`. So the
+    name changes exactly when what the image installs does. A commit that touches only
+    tests, docs or other files keeps the name, and an unchanged image is never rebuilt.
+  - Only `--apptainer` builds an image. Without it, an existing image stays in use
+    only while it still matches the env and the svensemble package. Once it is stale,
+    `refresh-experiment` keeps the file but points the `.config` at `env/`, and says so.
   - `env/` is still built. The image is made from its records.
+- With `--analysis`, the scripts also build `env-analysis/`, a second env for analysis
+  notebooks and scripts:
+  - It is `svensemble2/environment.yml` plus `production/specs/analysis.yml` (plotting
+    and notebook packages), with svensemble from the same commit as `env/`, and
+    `svensemble_analyse` installed editable from `svensemble2_pub/`.
+  - The pipeline, the `.config` file and the image never use it, so building or
+    rebuilding it never reruns svensemble tasks.
+  - The analysis package list lives in this repo, not in svensemble2, so editing it
+    never changes a svensemble2 commit.
+  - Register it as a Jupyter kernel by hand; the scripts print the command.
 
 ## 4. Experiment lifecycle
 
@@ -128,6 +145,8 @@ new-experiment ──► run ──► (fix ──► commit ──► refresh-e
    - A pipeline fix takes effect on the next run.
    - A svensemble fix needs `refresh-experiment foo` first, which reinstalls svensemble
      from the new commit. It also rebuilds the whole env if `environment.yml` changed.
+     An existing `env-analysis/` gets the same svensemble, and is rebuilt if its specs
+     changed.
 4. **Merge.** If the work is worth keeping, merge `exp/foo` into `main` from your
    development checkout: `git merge exp/foo`.
 5. **Remove.** `remove-experiment foo` deletes the directory and env, and tells you
@@ -175,8 +194,9 @@ nextflow run <group>/nf-core-svensemble -c <group>/experiment.config -profile ..
   after `refresh-experiment`, cached svensemble tasks don't rerun. Use a fresh launch
   directory, or no `-resume`, after a refresh.
   - A group with an image is the exception. The task hash includes the container
-    name, and the name changes with the contents, so a refreshed image reruns the
-    svensemble tasks under `-resume`.
+    name, and the name changes with what the image installs, so a rebuilt image reruns
+    the svensemble tasks under `-resume`. A stale image that `refresh-experiment`
+    replaces with `env/` changes the hash too.
 - **An image needs `-profile apptainer`.** Without a container engine, Nextflow
   ignores `container`. The emptied `beforeScript` then activates nothing, and the tasks
   run with whatever Python is on the `PATH`.
@@ -204,28 +224,38 @@ its usage. Options can go anywhere on the line.
 builds the group's image ([§3](#3-the-parts-of-a-group)) and points the `.config`
 at it. It needs `module load apptainer`, and network access to Docker Hub and
 conda-forge. A build takes about 5–10 minutes and makes an image of about 300 MB.
+Only this flag ever builds an image.
+
+`--analysis` (on the same three) also builds `env-analysis/`
+([§3](#3-the-parts-of-a-group)). It never touches `env/`, the image or the `.config`.
 
 #### new-experiment
-`new-experiment [--apptainer] <name> [svensemble2-ref] [pipeline-ref]`
+`new-experiment [--apptainer] [--analysis] <name> [svensemble2-ref] [pipeline-ref]`
 Creates `worktrees/<name>/` on branch `exp/<name>` in both repos. Refs default to
 `main`. If `exp/<name>` already exists, it's reused, so you can bring back a removed
 experiment.
 
 #### refresh-experiment
-`refresh-experiment [--apptainer] <name>`
+`refresh-experiment [--apptainer] [--analysis] <name>`
 Reinstalls svensemble in the experiment's env from the latest commit on
 `exp/<name>`, and rebuilds the whole env if `environment.yml` changed or the env is missing. It then
-rewrites `MANIFEST` and the lock files. If the experiment has an image, or you pass
-`--apptainer`, it rebuilds the image and deletes the old one.
+rewrites `MANIFEST` and the lock files.
+- With `--apptainer`, it builds the image if its name changed (or reuses the existing
+  one) and deletes older ones.
+- Without it, no image is built. An existing image stays in the `.config` only if it
+  still matches; otherwise svensemble tasks run in `env/`, with a warning.
+- With `--analysis`, or if `env-analysis/` exists, it refreshes `env-analysis/` too:
+  svensemble from the same commit, and a full rebuild if its specs changed or it is missing.
 
 #### remove-experiment
 `remove-experiment <name>`
-Removes the worktrees, the env, the image and the generated files, and keeps the branches.
+Removes the worktrees, both envs, the image and the generated files, and keeps the branches.
 
 #### make-release
-`make-release [--apptainer] <tag> [svensemble2-ref] [pipeline-ref]`
+`make-release [--apptainer] [--analysis] <tag> [svensemble2-ref] [pipeline-ref]`
 Builds `releases/<tag>/`, tags both repos, and records `manifests/<tag>/` in this
-repo. With `--apptainer`, the image's recipe goes into `manifests/<tag>/` too.
+repo. With `--apptainer`, the image's recipe goes into `manifests/<tag>/` too; with
+`--analysis`, `analysis.used.yml` and `env-analysis.lock` do.
 
 ## 9. When things go wrong
 
@@ -233,6 +263,7 @@ repo. With `--apptainer`, the image's recipe goes into `manifests/<tag>/` too.
 |---|---|
 | `new-experiment` failed partway | `remove-experiment <name>`, then run it again |
 | An experiment env broke or got deleted | `rm -rf worktrees/<name>/env`, then `refresh-experiment <name>` rebuilds it |
+| An analysis env broke or got deleted | `rm -rf worktrees/<name>/env-analysis`, then `refresh-experiment --analysis <name>` rebuilds it |
 | A release env broke or got deleted | rebuild from its records: `micromamba create -p <rel>/env --file <rel>/env.lock`, then `pip install --no-deps` svensemble from the tag. Run `chmod -R u+w <rel>` first, `chmod -R a-w <rel>` after |
 | You need to delete a release | `chmod -R u+w releases/<tag> && rm -rf releases/<tag>`. The tag and `manifests/<tag>/` stay, so you can rebuild it later |
 | `remove-experiment` refuses | it names the reason: commit or discard changes in the worktree, or move results out of the directory |

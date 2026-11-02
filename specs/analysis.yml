@@ -1,0 +1,17 @@
+# Packages added on top of svensemble2/environment.yml for <group>/env-analysis/.
+# Built only with --analysis (new-experiment, refresh-experiment, make-release).
+# Kept here, not in svensemble2, so editing it never changes a svensemble2 commit
+# (which would rename the apptainer image and rerun svensemble tasks).
+name: svensemble2-analysis
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - matplotlib>=3.8
+  - seaborn>=0.13
+  - adjusttext>=1.0
+  - scipy
+  - statsmodels
+  - tqdm
+  - ipykernel
+  - ipywidgets

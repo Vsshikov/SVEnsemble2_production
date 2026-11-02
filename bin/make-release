@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# usage: make-release [--apptainer] <tag> [svensemble2-ref] [pipeline-ref]
+# usage: make-release [--apptainer] [--analysis] <tag> [svensemble2-ref] [pipeline-ref]
 #
 # Creates releases/<tag>/: plain copies of both repos at the given commits, an
 # env built from the release's environment.yml, lock files, MANIFEST and
@@ -8,6 +8,7 @@
 # commits them in the production repo, and makes the release read-only.
 #
 #   --apptainer   also build an apptainer image of the env, and run svensemble tasks in it
+#   --analysis    also build the analysis env (env-analysis/); its records go into manifests/<tag>/
 source "$(dirname "$0")/../lib/common.sh"
 
 parse_opts "$@"; set -- "${ARGS[@]}"
@@ -42,10 +43,12 @@ build_env "$rel/env" "$rel/svensemble2/environment.yml" "${commits[0]}"
 write_records "$rel" "$rel/env" "${commits[0]}" "${commits[1]}"
 [[ -n "$APPTAINER" ]] && build_image "$rel" "${commits[0]}"
 write_nf_config "$rel/release.config" "$rel/env" "$(current_image "$rel")"
+[[ -n "$ANALYSIS" ]] && build_analysis_env "$rel" "$rel/svensemble2/environment.yml" "${commits[0]}"
 
 mkdir -p "$MANIFESTS_DIR/$tag"
 cp "$rel"/{MANIFEST,env.lock,pip.lock,environment.used.yml} "$MANIFESTS_DIR/$tag/"
 [[ -n "$APPTAINER" ]] && cp "$rel/svensemble.def" "$MANIFESTS_DIR/$tag/"
+[[ -n "$ANALYSIS" ]] && cp "$rel"/{analysis.used.yml,env-analysis.lock} "$MANIFESTS_DIR/$tag/"
 git -C "$PRODUCTION_DIR" add "manifests/$tag"
 git -C "$PRODUCTION_DIR" commit -q -m "Release $tag" -- "manifests/$tag"
 for i in 0 1; do
@@ -56,6 +59,7 @@ finished=1
 
 info "release ready: $rel"
 print_run_hint "$rel" release.config
+[[ -n "$ANALYSIS" ]] && print_kernel_hint "$rel"
 for repo in "${REPOS[@]}"; do
     if git -C "$repo" remote get-url origin &> /dev/null; then
         echo "push the tag when ready: git -C $repo push origin $tag"

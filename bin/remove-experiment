@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # usage: remove-experiment <name>
 #
-# Removes worktrees/<name>/: both worktrees, the env and the generated files.
+# Removes worktrees/<name>/: both worktrees, the envs (env/, env-analysis/) and the generated files.
 # Refuses if either worktree has uncommitted changes, or if the directory holds
 # anything else (move results out first). Branches exp/<name> are kept.
 source "$(dirname "$0")/../lib/common.sh"
@@ -20,8 +20,9 @@ for repo in "${REPOS[@]}"; do
     fi
 done
 
-rm -rf "$dir/env"
+rm -rf "$dir/env" "$dir/env-analysis"
 rm -f "$dir"/{MANIFEST,env.lock,pip.lock,environment.used.yml,experiment.config,svensemble.def} "$dir"/svensemble-*.sif
+rm -f "$dir"/{analysis.used.yml,env-analysis.lock}
 rmdir "$dir" 2> /dev/null || die "$dir still contains other files; move them out and rerun"
 info "removed $dir"
 

@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
-# usage: refresh-experiment [--apptainer] <name>
+# usage: refresh-experiment [--apptainer] [--analysis] <name>
 #
 # Brings an experiment's env up to date with the latest commit on exp/<name>
 # in svensemble2. Reinstalls only svensemble, unless environment.yml changed
 # in that commit or the env is missing, in which case the whole env is rebuilt.
 # Uncommitted edits in the worktree are never installed: commit them first.
 #
-#   --apptainer   also build an apptainer image of the env, and run svensemble tasks in it.
-#                 Once an experiment has an image, every refresh rebuilds it.
+#   --apptainer   build (or reuse) an apptainer image of the env, and run svensemble tasks in it.
+#                 Only this flag builds an image. Without it, an existing image is used only while
+#                 it still holds this svensemble package and env.lock; once stale, it is kept on
+#                 disk but svensemble tasks run in env/ instead.
+#   --analysis    also build the analysis env (env-analysis/); an existing one is always refreshed.
+#                 It never affects env/, the image or experiment.config.
 source "$(dirname "$0")/../lib/common.sh"
 
 parse_opts "$@"; set -- "${ARGS[@]}"
@@ -21,6 +25,7 @@ warn_if_dirty "$dir/svensemble2"
 sv_commit=$(resolve_commit "$SVENSEMBLE_REPO" "$branch")
 nf_commit=$(resolve_commit "$PIPELINE_REPO" "$branch")
 yml=$(mktemp)
+trap 'rm -f "$yml"' EXIT
 git -C "$SVENSEMBLE_REPO" show "$sv_commit:environment.yml" > "$yml"
 
 if [[ -d "$dir/env" ]] && cmp -s "$yml" "$dir/environment.used.yml"; then
@@ -30,15 +35,30 @@ else
     rm -rf "$dir/env"
     build_env "$dir/env" "$yml" "$sv_commit"
 fi
-rm -f "$yml"
 write_records "$dir" "$dir/env" "$sv_commit" "$nf_commit"
-if [[ -n "$APPTAINER" || -n "$(current_image "$dir")" ]]; then
+
+if [[ -n "$APPTAINER" ]]; then
     build_image "$dir" "$sv_commit"
+    image=$(current_image "$dir")
+else
+    image=$(matching_image "$dir" "$sv_commit")
+    stale=$(current_image "$dir")
+    if [[ -n "$image" ]]; then
+        echo "image=$(basename "$image")" >> "$dir/MANIFEST"
+    elif [[ -n "$stale" ]]; then
+        echo "warning: $(basename "$stale") does not hold svensemble ${sv_commit:0:7} with this env.lock;" >&2
+        echo "  svensemble tasks now run in env/. To run them in an image again: refresh-experiment --apptainer $name" >&2
+    fi
 fi
-write_nf_config "$dir/experiment.config" "$dir/env" "$(current_image "$dir")"
+write_nf_config "$dir/experiment.config" "$dir/env" "$image"
 info "env now matches svensemble2 ${sv_commit:0:7}"
-if [[ -n "$(current_image "$dir")" ]]; then
-    echo "note: svensemble tasks run in $(basename "$(current_image "$dir")"); -resume reruns them if its name changed"
+if [[ -n "$image" ]]; then
+    echo "note: svensemble tasks run in $(basename "$image"); -resume reruns them only if its name changed"
 else
     echo "note: -resume does not notice env changes; cached svensemble tasks will not rerun"
+fi
+
+if [[ -n "$ANALYSIS" || -d "$dir/env-analysis" ]]; then
+    refresh_analysis_env "$dir" "$yml" "$sv_commit"
+    print_kernel_hint "$dir"
 fi

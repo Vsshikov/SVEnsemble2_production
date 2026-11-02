@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# usage: new-experiment [--apptainer] <name> [svensemble2-ref] [pipeline-ref]
+# usage: new-experiment [--apptainer] [--analysis] <name> [svensemble2-ref] [pipeline-ref]
 #
 # Creates worktrees/<name>/ with a branch exp/<name> checked out in both repos,
 # its own env, and experiment.config pointing the pipeline at that env.
 # Refs default to main. If exp/<name> already exists, it is reused and the refs are ignored.
 #
 #   --apptainer   also build an apptainer image of the env, and run svensemble tasks in it
+#   --analysis    also build the analysis env (env-analysis/): env/ plus plotting packages
+#                 (specs/analysis.yml) and svensemble_analyse editable; the pipeline never uses it
 source "$(dirname "$0")/../lib/common.sh"
 
 parse_opts "$@"; set -- "${ARGS[@]}"
@@ -37,5 +39,9 @@ write_records "$dir" "$dir/env" "$sv_commit" "$nf_commit"
 [[ -n "$APPTAINER" ]] && build_image "$dir" "$sv_commit"
 write_nf_config "$dir/experiment.config" "$dir/env" "$(current_image "$dir")"
 
+[[ -n "$ANALYSIS" ]] && build_analysis_env "$dir" "$dir/svensemble2/environment.yml" "$sv_commit"
+
 info "experiment ready: $dir"
 print_run_hint "$dir" experiment.config
+[[ -n "$ANALYSIS" ]] && print_kernel_hint "$dir"
+exit 0
