@@ -54,6 +54,9 @@ write_nf_config "$dir/experiment.config" "$dir/env" "$image"
 info "env now matches svensemble2 ${sv_commit:0:7}"
 if [[ -n "$image" ]]; then
     echo "note: svensemble tasks run in $(basename "$image"); -resume reruns them only if its name changed"
+    echo "  launch with -profile apptainer, after: module load $APPTAINER_MODULE"
+elif [[ -n "${stale:-}" ]]; then
+    echo "note: the image is stale and not used; if the last run used it, -resume reruns svensemble tasks once"
 else
     echo "note: -resume does not notice env changes; cached svensemble tasks will not rerun"
 fi

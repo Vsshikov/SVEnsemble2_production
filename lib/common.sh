@@ -13,6 +13,7 @@ RELEASES_DIR="$PROJECT_ROOT/releases"
 MANIFESTS_DIR="$PRODUCTION_DIR/manifests"
 MAIN_BRANCH=main
 IMAGE_BASE=mambaorg/micromamba:2.10.0   # docker base of the apptainer images
+APPTAINER_MODULE=apptainer/1.4.5        # builds the images; load it too before running the pipeline on one
 PUB_REPO="$PROJECT_ROOT/svensemble2_pub"            # svensemble_analyse, installed editable in env-analysis/
 ANALYSIS_EXTRAS="$PRODUCTION_DIR/specs/analysis.yml" # plotting and notebook packages added for env-analysis/
 
@@ -21,8 +22,8 @@ info() { echo "==> $*"; }
 # usage: print the script's header comment (everything after the shebang, up to the first non-comment line)
 usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 1; }
 
-# parse_opts "$@": sets APPTAINER=1 for --apptainer, ANALYSIS=1 for --analysis, prints
-# usage for -h/--help, and leaves the positional args in ARGS. Use as: parse_opts "$@"; set -- "${ARGS[@]}"
+# parse_opts "$@": sets APPTAINER=1 (and loads $APPTAINER_MODULE) for --apptainer, ANALYSIS=1 for --analysis,
+# prints usage for -h/--help, and leaves the positional args in ARGS. Use as: parse_opts "$@"; set -- "${ARGS[@]}"
 parse_opts() {
     local opts
     opts=$(getopt -o h -l apptainer,analysis,help -n "$(basename "$0")" -- "$@") || usage
@@ -37,7 +38,19 @@ parse_opts() {
             --) shift; break ;;
         esac
     done
+    # Loaded here rather than in build_image, so a missing module stops the script before the env is built
+    if [[ -n "$APPTAINER" ]]; then
+        load_apptainer
+    fi
     ARGS=("$@")
+}
+
+# load_apptainer: load $APPTAINER_MODULE, unloading any other apptainer version first (they conflict)
+load_apptainer() {
+    type module &> /dev/null || source /etc/profile.d/modules.sh
+    module unload apptainer
+    module load "$APPTAINER_MODULE" || die "could not load module $APPTAINER_MODULE"
+    info "using $(apptainer --version) ($APPTAINER_MODULE)"
 }
 
 MAMBA="${MAMBA_EXE:-$(command -v micromamba || true)}"
@@ -86,36 +99,52 @@ analysis_spec() {
     cat "$ANALYSIS_EXTRAS"
 }
 
-# build_analysis_env <group dir> <environment.yml> <commit>
-# Creates <group>/env-analysis/: the core spec plus specs/analysis.yml, svensemble from
-# <commit> as in env/, and svensemble_analyse editable from svensemble2_pub.
-# It is separate from env/: the pipeline, its config and its image never use it.
+# build_analysis_env <group dir> <environment.yml> <commit> [svensemble2_pub commit]
+# Creates <group>/env-analysis/: the core spec plus specs/analysis.yml, svensemble from <commit>
+# as in env/, and svensemble_analyse: editable from svensemble2_pub (experiments, for testing),
+# or non-editable from the given svensemble2_pub commit (releases). It is separate from env/:
+# the pipeline, its config and its image never use it. analysis.used.yml is written last, so a
+# build that fails partway is rebuilt by the next refresh instead of being taken as complete.
 build_analysis_env() {
-    local dir=$1 yml=$2 commit=$3 prefix="$1/env-analysis"
+    local dir=$1 yml=$2 commit=$3 pub_commit=${4:-} prefix="$1/env-analysis"
     [[ -f "$yml" ]] || die "no environment.yml at $yml"
     [[ -f "$ANALYSIS_EXTRAS" ]] || die "no analysis spec at $ANALYSIS_EXTRAS"
     [[ -f "$PUB_REPO/pyproject.toml" ]] || die "no svensemble_analyse package at $PUB_REPO"
+    rm -f "$dir/analysis.used.yml"
     info "building analysis env at $prefix"
     "$MAMBA" create -y -q -p "$prefix" -f "$yml" -f "$ANALYSIS_EXTRAS"
-    analysis_spec "$yml" > "$dir/analysis.used.yml"
     install_svensemble "$prefix" "$commit"
-    install_analyse "$prefix"
+    install_analyse "$prefix" "$pub_commit"
     "$MAMBA" env export -p "$prefix" --explicit > "$dir/env-analysis.lock"
+    analysis_spec "$yml" > "$dir/analysis.used.yml"
 }
 
-# install_analyse <prefix>: svensemble_analyse editable from svensemble2_pub, so its edits apply at once
+# install_analyse <prefix> [svensemble2_pub commit]: svensemble_analyse editable from svensemble2_pub,
+# so its edits apply at once; or, given a commit, a non-editable install of exactly that commit
 install_analyse() {
-    info "installing svensemble_analyse (editable) from $PUB_REPO"
-    "$MAMBA" run -p "$1" pip install -q --no-deps -e "$PUB_REPO"
-    "$MAMBA" run -p "$1" pip check
+    local prefix=$1 pub_commit=${2:-} tarball
+    if [[ -z "$pub_commit" ]]; then
+        info "installing svensemble_analyse (editable) from $PUB_REPO"
+        "$MAMBA" run -p "$prefix" pip install -q --no-deps -e "$PUB_REPO"
+    else
+        tarball="$(mktemp -d)/svensemble_analyse.tar.gz"
+        git -C "$PUB_REPO" archive --format=tar.gz --prefix=svensemble_analyse/ -o "$tarball" "$pub_commit" \
+            pyproject.toml README.md svensemble_analyse
+        info "installing svensemble_analyse from svensemble2_pub ${pub_commit:0:7}"
+        "$MAMBA" run -p "$prefix" pip install -q --no-deps --force-reinstall "$tarball"
+        rm -rf "$(dirname "$tarball")"
+    fi
+    "$MAMBA" run -p "$prefix" pip check
 }
 
 # refresh_analysis_env <group dir> <environment.yml> <commit>: rebuild env-analysis/ if its
-# spec changed or it is missing, else only reinstall svensemble from <commit>
+# spec changed or it is missing (or an earlier build did not finish), else reinstall svensemble
+# from <commit> and svensemble_analyse (editable) from svensemble2_pub
 refresh_analysis_env() {
     local dir=$1 yml=$2 commit=$3
     if [[ -d "$dir/env-analysis" ]] && cmp -s <(analysis_spec "$yml") "$dir/analysis.used.yml"; then
         install_svensemble "$dir/env-analysis" "$commit"
+        install_analyse "$dir/env-analysis"
         "$MAMBA" env export -p "$dir/env-analysis" --explicit > "$dir/env-analysis.lock"
     else
         info "analysis env missing or its spec changed: rebuilding it"
@@ -219,7 +248,7 @@ matching_image() {
         return 0
     fi
     [[ "$name" =~ ^svensemble-([0-9a-f]{7})-([0-9a-f]{8})\.sif$ ]] || return 0
-    old=$(git -C "$SVENSEMBLE_REPO" rev-parse --verify --quiet "${BASH_REMATCH[1]}^{commit}") || return 0
+    old=$(git -C "$SVENSEMBLE_REPO" rev-parse --verify --quiet "${BASH_REMATCH[1]}^{commit}" 2> /dev/null) || return 0
     same_package "$old" "$commit" || return 0
     def=$(mktemp)
     write_image_def "$def" "$old"
@@ -233,13 +262,13 @@ matching_image() {
 # Named by image_name; an image of that name is reused, not rebuilt. Older images of the group are deleted.
 build_image() {
     local dir=$1 commit=$2 sif ctx old
-    command -v apptainer > /dev/null || die "apptainer not found (run 'module load apptainer')"
     write_image_def "$dir/svensemble.def" "$commit"
     sif=$(matching_image "$dir" "$commit")
     if [[ -n "$sif" ]]; then
         info "image up to date: $(basename "$sif")"
     else
         sif="$dir/$(image_name "$dir" "$commit")"
+    [[ "$(basename "$sif")" =~ ^svensemble-[0-9a-f]{7}-[0-9a-f]{8}\.sif$ ]] || die "could not name the image ($(basename "$sif"))"
         ctx=$(mktemp -d)
         cp "$dir/svensemble.def" "$dir/env.lock" "$ctx/"
         git -C "$SVENSEMBLE_REPO" archive --format=tar.gz --prefix=svensemble2/ -o "$ctx/svensemble2.tar.gz" "$commit"
@@ -299,8 +328,9 @@ print_run_hint() {
     echo "Without it, svensemble tasks run in the env set in the pipeline's nextflow.config"
     echo "(params.svensemble_conda), which is not this one."
     if [[ -n "$sif" ]]; then
-        echo "svensemble tasks run in $(basename "$sif"), which needs -profile apptainer."
+        echo "svensemble tasks run in $(basename "$sif"), which needs -profile apptainer and $APPTAINER_MODULE loaded."
     fi
     echo "Launch from a separate directory:"
+    [[ -n "$sif" ]] && echo "  module load $APPTAINER_MODULE"
     echo "  nextflow run $1/nf-core-svensemble -c $1/$2 ..."
 }

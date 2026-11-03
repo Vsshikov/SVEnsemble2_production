@@ -8,7 +8,8 @@
 # commits them in the production repo, and makes the release read-only.
 #
 #   --apptainer   also build an apptainer image of the env, and run svensemble tasks in it
-#   --analysis    also build the analysis env (env-analysis/); its records go into manifests/<tag>/
+#   --analysis    also build the analysis env (env-analysis/), with svensemble_analyse installed (not editable)
+#                 from svensemble2_pub main; its records and that commit go into manifests/<tag>/
 source "$(dirname "$0")/../lib/common.sh"
 
 parse_opts "$@"; set -- "${ARGS[@]}"
@@ -43,7 +44,13 @@ build_env "$rel/env" "$rel/svensemble2/environment.yml" "${commits[0]}"
 write_records "$rel" "$rel/env" "${commits[0]}" "${commits[1]}"
 [[ -n "$APPTAINER" ]] && build_image "$rel" "${commits[0]}"
 write_nf_config "$rel/release.config" "$rel/env" "$(current_image "$rel")"
-[[ -n "$ANALYSIS" ]] && build_analysis_env "$rel" "$rel/svensemble2/environment.yml" "${commits[0]}"
+if [[ -n "$ANALYSIS" ]]; then
+    # Releases install svensemble_analyse from a recorded svensemble2_pub commit, never editable
+    warn_if_dirty "$PUB_REPO"
+    pub_commit=$(resolve_commit "$PUB_REPO" "$MAIN_BRANCH")
+    build_analysis_env "$rel" "$rel/svensemble2/environment.yml" "${commits[0]}" "$pub_commit"
+    echo "svensemble2_pub_commit=$pub_commit" >> "$rel/MANIFEST"
+fi
 
 mkdir -p "$MANIFESTS_DIR/$tag"
 cp "$rel"/{MANIFEST,env.lock,pip.lock,environment.used.yml} "$MANIFESTS_DIR/$tag/"
