@@ -10,6 +10,7 @@ PIPELINE_REPO="$PROJECT_ROOT/nf-core-svensemble"
 REPOS=("$SVENSEMBLE_REPO" "$PIPELINE_REPO")
 WORKTREES_DIR="$PROJECT_ROOT/worktrees"
 RELEASES_DIR="$PROJECT_ROOT/releases"
+NFCORE_ENV="$PROJECT_ROOT/envs/nfcore"                # Nextflow + nf-core tools; rebuild from envs/nfcore.lock.txt
 MANIFESTS_DIR="$PRODUCTION_DIR/manifests"
 MAIN_BRANCH=main
 IMAGE_BASE=mambaorg/micromamba:2.10.0   # docker base of the apptainer images
@@ -75,7 +76,7 @@ build_env() {
     local prefix=$1 yml=$2 commit=$3
     [[ -f "$yml" ]] || die "no environment.yml at $yml (is it committed at ${commit:0:7}?)"
     info "building env at $prefix"
-    "$MAMBA" create -y -q -p "$prefix" -f "$yml"
+    "$MAMBA" create -y -p "$prefix" -f "$yml"
     cp "$yml" "$(dirname "$prefix")/environment.used.yml"
     install_svensemble "$prefix" "$commit"
 }
@@ -112,7 +113,7 @@ build_analysis_env() {
     [[ -f "$PUB_REPO/pyproject.toml" ]] || die "no svensemble_analyse package at $PUB_REPO"
     rm -f "$dir/analysis.used.yml"
     info "building analysis env at $prefix"
-    "$MAMBA" create -y -q -p "$prefix" -f "$yml" -f "$ANALYSIS_EXTRAS"
+    "$MAMBA" create -y -p "$prefix" -f "$yml" -f "$ANALYSIS_EXTRAS"
     install_svensemble "$prefix" "$commit"
     install_analyse "$prefix" "$pub_commit"
     "$MAMBA" env export -p "$prefix" --explicit > "$dir/env-analysis.lock"
@@ -153,11 +154,48 @@ refresh_analysis_env() {
     fi
 }
 
-# print_kernel_hint <group dir>: how to make env-analysis/ a Jupyter kernel (not done automatically)
-print_kernel_hint() {
-    echo "analysis env: $1/env-analysis (svensemble_analyse editable from $PUB_REPO)"
-    echo "to use it as a Jupyter kernel:"
-    echo "  $MAMBA run -p $1/env-analysis python -m ipykernel install --user --name $(basename "$1")-analysis"
+# kernel_name <group dir>: Jupyter kernel name of the group's env-analysis/: sve-exp-<name> for an
+# experiment, sve-rel-<tag> for a release. The prefixes keep the two apart, and clear of hand-made kernels.
+kernel_name() {
+    case $(dirname "$1") in
+        "$WORKTREES_DIR") echo "sve-exp-$(basename "$1")" ;;
+        "$RELEASES_DIR") echo "sve-rel-$(basename "$1")" ;;
+        *) die "$1 is neither an experiment nor a release" ;;
+    esac
+}
+
+# kernel_dir <kernel name>: where `ipykernel install --user` puts the kernel (jupyter's user data dir on Linux)
+kernel_dir() {
+    echo "${JUPYTER_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/jupyter}/kernels/$1"
+}
+
+# register_kernel <group dir>: register env-analysis/ as a Jupyter kernel for this user, replacing
+# any earlier one of the same name. The kernel runs the env's python by path, so it keeps working
+# when the env is rebuilt in place. A failure only warns: the env itself is fine.
+register_kernel() {
+    local name display
+    name=$(kernel_name "$1")
+    display="svensemble ${name#sve-} analysis"
+    display=${display/ exp-/ experiment }
+    display=${display/ rel-/ release }
+    if "$MAMBA" run -p "$1/env-analysis" python -m ipykernel install --user --name "$name" \
+            --display-name "$display" > /dev/null; then
+        info "Jupyter kernel \"$display\" ($name) runs $1/env-analysis"
+    else
+        echo "warning: could not register Jupyter kernel $name; to retry:" >&2
+        echo "  $MAMBA run -p $1/env-analysis python -m ipykernel install --user --name $name --display-name '$display'" >&2
+    fi
+}
+
+# unregister_kernel <group dir>: remove the group's Jupyter kernel, if registered
+unregister_kernel() {
+    local name dir
+    name=$(kernel_name "$1")
+    dir=$(kernel_dir "$name")
+    if [[ -d "$dir" ]]; then
+        rm -rf "$dir"
+        info "removed Jupyter kernel $name"
+    fi
 }
 
 # write_records <dir> <env prefix> <svensemble2 commit> <pipeline commit>
@@ -332,5 +370,5 @@ print_run_hint() {
     fi
     echo "Launch from a separate directory:"
     [[ -n "$sif" ]] && echo "  module load $APPTAINER_MODULE"
-    echo "  nextflow run $1/nf-core-svensemble -c $1/$2 ..."
+    echo "  micromamba run -p $NFCORE_ENV nextflow run $1/nf-core-svensemble -c $1/$2 ..."
 }

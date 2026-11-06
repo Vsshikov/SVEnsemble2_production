@@ -7,7 +7,8 @@
 #
 #   --apptainer   also build an apptainer image of the env, and run svensemble tasks in it
 #   --analysis    also build the analysis env (env-analysis/): env/ plus plotting packages
-#                 (specs/analysis.yml) and svensemble_analyse editable; the pipeline never uses it
+#                 (specs/analysis.yml) and svensemble_analyse editable, registered as the Jupyter
+#                 kernel sve-exp-<name>; the pipeline never uses it
 source "$(dirname "$0")/../lib/common.sh"
 
 parse_opts "$@"; set -- "${ARGS[@]}"
@@ -43,5 +44,5 @@ write_nf_config "$dir/experiment.config" "$dir/env" "$(current_image "$dir")"
 
 info "experiment ready: $dir"
 print_run_hint "$dir" experiment.config
-[[ -n "$ANALYSIS" ]] && print_kernel_hint "$dir"
+[[ -n "$ANALYSIS" ]] && register_kernel "$dir"
 exit 0

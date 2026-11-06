@@ -11,6 +11,7 @@
 #                 it still holds this svensemble package and env.lock; once stale, it is kept on
 #                 disk but svensemble tasks run in env/ instead.
 #   --analysis    also build the analysis env (env-analysis/); an existing one is always refreshed.
+#                 Either way its Jupyter kernel sve-exp-<name> is (re)registered.
 #                 It never affects env/, the image or experiment.config.
 source "$(dirname "$0")/../lib/common.sh"
 
@@ -24,7 +25,8 @@ branch="exp/$name"
 warn_if_dirty "$dir/svensemble2"
 sv_commit=$(resolve_commit "$SVENSEMBLE_REPO" "$branch")
 nf_commit=$(resolve_commit "$PIPELINE_REPO" "$branch")
-yml=$(mktemp)
+# micromamba reads -f as an env file only if it ends in .yml/.yaml; otherwise as a list of specs
+yml=$(mktemp --suffix=.yml)
 trap 'rm -f "$yml"' EXIT
 git -C "$SVENSEMBLE_REPO" show "$sv_commit:environment.yml" > "$yml"
 
@@ -63,5 +65,5 @@ fi
 
 if [[ -n "$ANALYSIS" || -d "$dir/env-analysis" ]]; then
     refresh_analysis_env "$dir" "$yml" "$sv_commit"
-    print_kernel_hint "$dir"
+    register_kernel "$dir"
 fi

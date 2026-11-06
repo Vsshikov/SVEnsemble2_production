@@ -9,7 +9,8 @@
 #
 #   --apptainer   also build an apptainer image of the env, and run svensemble tasks in it
 #   --analysis    also build the analysis env (env-analysis/), with svensemble_analyse installed (not editable)
-#                 from svensemble2_pub main; its records and that commit go into manifests/<tag>/
+#                 from svensemble2_pub main, registered as the Jupyter kernel sve-rel-<tag>;
+#                 its records and that commit go into manifests/<tag>/
 source "$(dirname "$0")/../lib/common.sh"
 
 parse_opts "$@"; set -- "${ARGS[@]}"
@@ -66,7 +67,7 @@ finished=1
 
 info "release ready: $rel"
 print_run_hint "$rel" release.config
-[[ -n "$ANALYSIS" ]] && print_kernel_hint "$rel"
+[[ -n "$ANALYSIS" ]] && register_kernel "$rel"
 for repo in "${REPOS[@]}"; do
     if git -C "$repo" remote get-url origin &> /dev/null; then
         echo "push the tag when ready: git -C $repo push origin $tag"

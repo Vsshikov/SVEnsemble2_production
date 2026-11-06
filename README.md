@@ -50,7 +50,8 @@ Papenfuss_SVEnsemble2/
 │   ├── lib/common.sh         shared paths and helpers
 │   └── manifests/<tag>/      one record per release
 ├── worktrees/<name>/         one directory per experiment
-└── releases/<tag>/           one directory per release
+├── releases/<tag>/           one directory per release
+└── envs/nfcore/              Nextflow + nf-core tools; rebuild from envs/nfcore.lock.txt
 ```
 
 ## 2. The three places code lives
@@ -130,7 +131,10 @@ How the parts depend on each other:
     rebuilding it never reruns svensemble tasks.
   - The analysis package list lives in this repo, not in svensemble2, so editing it
     never changes a svensemble2 commit.
-  - Register it as a Jupyter kernel by hand; the scripts print the command.
+  - The scripts register it as a Jupyter kernel for you (`ipykernel install --user`):
+    `sve-exp-<name>` (shown as "svensemble experiment <name> analysis") or `sve-rel-<tag>`
+    ("svensemble release <tag> analysis"). `refresh-experiment` re-registers it, and
+    `remove-experiment` deletes it. Releases are never removed, so neither are their kernels.
 
 ## 4. Experiment lifecycle
 
@@ -182,7 +186,7 @@ up to you.
 
 ```bash
 mkdir -p /path/to/run/foo && cd /path/to/run/foo
-nextflow run <group>/nf-core-svensemble -c <group>/experiment.config -profile ... [params]
+micromamba run -p <project root>/envs/nfcore nextflow run <group>/nf-core-svensemble -c <group>/experiment.config -profile ... [params]
 ```
 
 - **Always pass `-c <group>/experiment.config`** (or `release.config` for a release).
