@@ -100,24 +100,40 @@ analysis_spec() {
     cat "$ANALYSIS_EXTRAS"
 }
 
-# build_analysis_env <group dir> <environment.yml> <commit> [svensemble2_pub commit]
-# Creates <group>/env-analysis/: the core spec plus specs/analysis.yml, svensemble from <commit>
-# as in env/, and svensemble_analyse: editable from svensemble2_pub (experiments, for testing),
-# or non-editable from the given svensemble2_pub commit (releases). It is separate from env/:
-# the pipeline, its config and its image never use it. analysis.used.yml is written last, so a
-# build that fails partway is rebuilt by the next refresh instead of being taken as complete.
+# build_analysis_env <group dir> <environment.yml> [<svensemble2 commit> <svensemble2_pub commit>]
+# Creates <group>/env-analysis/: the core spec plus specs/analysis.yml, then svensemble and
+# svensemble_analyse as install_analysis_packages puts them: editable for an experiment (no
+# commits), from the given commits for a release. It is separate from env/: the pipeline, its
+# config and its image never use it. analysis.used.yml is written last, so a build that fails
+# partway is rebuilt by the next refresh instead of being taken as complete.
 build_analysis_env() {
-    local dir=$1 yml=$2 commit=$3 pub_commit=${4:-} prefix="$1/env-analysis"
+    local dir=$1 yml=$2 commit=${3:-} pub_commit=${4:-} prefix="$1/env-analysis"
     [[ -f "$yml" ]] || die "no environment.yml at $yml"
     [[ -f "$ANALYSIS_EXTRAS" ]] || die "no analysis spec at $ANALYSIS_EXTRAS"
     [[ -f "$PUB_REPO/pyproject.toml" ]] || die "no svensemble_analyse package at $PUB_REPO"
     rm -f "$dir/analysis.used.yml"
     info "building analysis env at $prefix"
     "$MAMBA" create -y -p "$prefix" -f "$yml" -f "$ANALYSIS_EXTRAS"
-    install_svensemble "$prefix" "$commit"
-    install_analyse "$prefix" "$pub_commit"
+    install_analysis_packages "$dir" "$commit" "$pub_commit"
     "$MAMBA" env export -p "$prefix" --explicit > "$dir/env-analysis.lock"
     analysis_spec "$yml" > "$dir/analysis.used.yml"
+}
+
+# install_analysis_packages <group dir> [<svensemble2 commit> <svensemble2_pub commit>]: put svensemble
+# and svensemble_analyse into <group>/env-analysis/.
+# Without commits (an experiment), installs both editable: svensemble from the group's svensemble2/
+# worktree, svensemble_analyse from svensemble2_pub/. Edits then reach the Jupyter kernel without a
+# commit or a refresh, so the kernel can run code the pipeline does not: the pipeline runs the
+# commit in MANIFEST. With commits (a release), installs exactly those commits, non-editable.
+install_analysis_packages() {
+    local dir=$1 commit=${2:-} pub_commit=${3:-} prefix="$1/env-analysis"
+    if [[ -z "$commit" ]]; then
+        info "installing svensemble (editable) from $dir/svensemble2"
+        "$MAMBA" run -p "$prefix" pip install -q --no-deps -e "$dir/svensemble2"
+    else
+        install_svensemble "$prefix" "$commit"
+    fi
+    install_analyse "$prefix" "$pub_commit"
 }
 
 # install_analyse <prefix> [svensemble2_pub commit]: svensemble_analyse editable from svensemble2_pub,
@@ -138,19 +154,19 @@ install_analyse() {
     "$MAMBA" run -p "$prefix" pip check
 }
 
-# refresh_analysis_env <group dir> <environment.yml> <commit>: rebuild env-analysis/ if its
-# spec changed or it is missing (or an earlier build did not finish), else reinstall svensemble
-# from <commit> and svensemble_analyse (editable) from svensemble2_pub
+# refresh_analysis_env <group dir> <environment.yml>: for an experiment. Rebuild env-analysis/ if
+# its spec changed or it is missing (or an earlier build did not finish), else reinstall svensemble
+# and svensemble_analyse editable. The reinstall also replaces a svensemble that an older version
+# of these scripts installed from a commit.
 refresh_analysis_env() {
-    local dir=$1 yml=$2 commit=$3
+    local dir=$1 yml=$2
     if [[ -d "$dir/env-analysis" ]] && cmp -s <(analysis_spec "$yml") "$dir/analysis.used.yml"; then
-        install_svensemble "$dir/env-analysis" "$commit"
-        install_analyse "$dir/env-analysis"
+        install_analysis_packages "$dir"
         "$MAMBA" env export -p "$dir/env-analysis" --explicit > "$dir/env-analysis.lock"
     else
         info "analysis env missing or its spec changed: rebuilding it"
         rm -rf "$dir/env-analysis"
-        build_analysis_env "$dir" "$yml" "$commit"
+        build_analysis_env "$dir" "$yml"
     fi
 }
 

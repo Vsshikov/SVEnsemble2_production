@@ -122,11 +122,18 @@ How the parts depend on each other:
 - With `--analysis`, the scripts also build `env-analysis/`, a second env for analysis
   notebooks and scripts:
   - It is `svensemble2/environment.yml` plus `production/specs/analysis.yml` (plotting
-    and notebook packages), solved together, with svensemble from the same commit as
-    `env/`. Package versions can differ from `env/`, which is solved without the extras.
-  - `svensemble_analyse` is installed editable from `svensemble2_pub/` in experiments, for
-    testing. A release installs it non-editable from `svensemble2_pub`'s `main`, and
-    records that commit as `svensemble2_pub_commit` in `MANIFEST`.
+    and notebook packages), solved together. Package versions can differ from `env/`,
+    which is solved without the extras.
+  - In an experiment, svensemble and `svensemble_analyse` are installed editable:
+    svensemble from the experiment's `svensemble2/` worktree, `svensemble_analyse` from
+    `svensemble2_pub/`. An edit reaches the Jupyter kernel straight away (with
+    `%autoreload 2`, or after a kernel restart), without a commit or a refresh. So the
+    kernel can run code the pipeline doesn't: the pipeline runs the commit in `MANIFEST`
+    until you commit and run `refresh-experiment`. A change to `pyproject.toml` or
+    `environment.yml` still needs a commit and a refresh.
+  - A release installs both non-editable: svensemble from the release commit, as in
+    `env/`, and `svensemble_analyse` from `svensemble2_pub`'s `main`, recorded as
+    `svensemble2_pub_commit` in `MANIFEST`.
   - The pipeline, the `.config` file and the image never use it, so building or
     rebuilding it never reruns svensemble tasks.
   - The analysis package list lives in this repo, not in svensemble2, so editing it
@@ -153,8 +160,10 @@ new-experiment ──► run ──► (fix ──► commit ──► refresh-e
    - A pipeline fix takes effect on the next run.
    - A svensemble fix needs `refresh-experiment foo` first, which reinstalls svensemble
      from the new commit. It also rebuilds the whole env if `environment.yml` changed.
-     An existing `env-analysis/` gets the same svensemble and a fresh editable
-     `svensemble_analyse`, and is rebuilt if its specs changed or its last build failed.
+     An existing `env-analysis/` gets svensemble and `svensemble_analyse` reinstalled
+     editable, and is rebuilt if its specs changed or its last build failed.
+   - The `sve-exp-foo` kernel runs the worktree's svensemble, so you can try a fix in a
+     notebook before committing it ([§3](#3-the-parts-of-a-group)).
 4. **Merge.** If the work is worth keeping, merge `exp/foo` into `main` from your
    development checkout: `git merge exp/foo`.
 5. **Remove.** `remove-experiment foo` deletes the directory and env, and tells you
@@ -256,7 +265,8 @@ rewrites `MANIFEST` and the lock files.
 - Without it, no image is built. An existing image stays in the `.config` only if it
   still matches; otherwise svensemble tasks run in `env/`, with a warning.
 - With `--analysis`, or if `env-analysis/` exists, it refreshes `env-analysis/` too:
-  svensemble from the same commit, and a full rebuild if its specs changed or it is missing.
+  svensemble and `svensemble_analyse` reinstalled editable, and a full rebuild if its specs
+  changed or it is missing.
 
 #### remove-experiment
 `remove-experiment <name>`
